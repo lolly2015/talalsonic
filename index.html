@@ -6,6 +6,7 @@
     <title>Sonic 3D World - Pro Ultimate Edition</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
         * {
@@ -165,6 +166,9 @@
         .locker-main-preview { min-height: 430px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .locker-main-preview .character-preview { transform: scale(2.25); margin-bottom: 70px; }
         .locker-search { background: rgba(2, 35, 110, .7); border: 2px solid rgba(147, 227, 255, .55); }
+        .ability-description { display: block; min-height: 42px; color: #bae6fd; font-size: 11px; line-height: 1.35; font-weight: 700; margin-top: 4px; }
+        .online-panel { background: rgba(2, 15, 42, .9); border: 1px solid rgba(103, 232, 249, .45); }
+        .chat-log { height: 150px; overflow-y: auto; background: rgba(15, 23, 42, .75); }
     </style>
 </head>
 <body class="text-white select-none">
@@ -255,10 +259,13 @@
 
         <div id="game-mode-buttons" class="flex flex-col sm:flex-row gap-3">
             <button id="btn-play-game" class="bg-gradient-to-r from-blue-600 via-cyan-500 to-indigo-600 hover:opacity-90 text-white font-black text-xl px-8 py-4 rounded-full shadow-[0_0_35px_rgba(6,182,212,0.6)] active:scale-95 transition-all duration-200">
-                PLAY GAME ⚡
+                PLAY OFFLINE 🤖
             </button>
             <button id="btn-freeplay" class="bg-gradient-to-r from-emerald-600 to-teal-500 hover:opacity-90 text-white font-black text-xl px-8 py-4 rounded-full shadow-xl active:scale-95 transition-all duration-200">
-                FREEPLAY ♾️
+                FREEPLAY 🤖
+            </button>
+            <button id="btn-online-game" class="bg-gradient-to-r from-fuchsia-600 to-pink-500 hover:opacity-90 text-white font-black text-xl px-8 py-4 rounded-full shadow-xl active:scale-95 transition-all duration-200">
+                ONLINE GAME 🌐
             </button>
         </div>
         <div id="device-choice" class="mt-4 flex gap-3">
@@ -270,6 +277,19 @@
             <button id="btn-secret-code" class="bg-yellow-500 text-slate-950 px-4 py-2 rounded-xl font-black">UNLOCK</button>
         </div>
         <div id="secret-code-status" class="text-xs text-yellow-300 mt-2 h-4"></div>
+        <div id="online-panel" class="online-panel hidden mt-4 p-4 rounded-2xl max-w-md w-full text-right">
+            <div class="font-black text-cyan-200 mb-2">ONLINE ROOM</div>
+            <div class="flex gap-2">
+                <input id="online-name" class="min-w-0 flex-1 bg-slate-800 rounded-lg px-3 py-2 text-white" maxlength="16" placeholder="اسمك">
+                <input id="online-room" class="min-w-0 flex-1 bg-slate-800 rounded-lg px-3 py-2 text-white" maxlength="12" placeholder="ROOM ID">
+            </div>
+            <button id="btn-online-connect" class="w-full mt-2 bg-cyan-500 text-slate-950 py-2 rounded-lg font-black">دخول الغرفة</button>
+            <div id="online-status" class="text-xs text-cyan-200 mt-2">أنشئ غرفة أو أدخل Room ID للعب مع أصدقائك.</div>
+            <div id="chat-panel" class="hidden mt-3">
+                <div id="chat-log" class="chat-log rounded-lg p-2 text-xs space-y-1"></div>
+                <div class="flex gap-2 mt-2"><input id="chat-input" class="min-w-0 flex-1 bg-slate-800 rounded-lg px-3 py-2 text-white" placeholder="اكتب رسالة"><button id="btn-chat-send" class="bg-pink-500 px-4 rounded-lg font-black">إرسال</button></div>
+            </div>
+        </div>
         <button id="btn-start" class="hidden">بدء اللعب</button>
     </div>
 
@@ -636,6 +656,11 @@
         let activeLockerCategory = 'characters';
         let lockerPreviewSelection = null;
         let freePlayMode = false;
+        let onlineMode = false;
+        let peer = null;
+        let peerConnection = null;
+        let remotePlayers = new Map();
+        let networkTimer = 0;
         let deviceMode = localStorage.getItem('deviceMode') || 'computer';
         let runHeld = false;
         let shootUnlocked = false;
@@ -1449,6 +1474,12 @@
             document.getElementById('btn-start').addEventListener('click', startGame);
             document.getElementById('btn-play-game').addEventListener('click', () => beginMode(false));
             document.getElementById('btn-freeplay').addEventListener('click', () => beginMode(true));
+            document.getElementById('btn-online-game').addEventListener('click', showOnlinePanel);
+            document.getElementById('btn-online-connect').addEventListener('click', connectOnlineGame);
+            document.getElementById('btn-chat-send').addEventListener('click', sendChatMessage);
+            document.getElementById('chat-input').addEventListener('keydown', event => {
+                if (event.key === 'Enter') sendChatMessage();
+            });
             document.getElementById('btn-secret-code').addEventListener('click', redeemSecretCode);
             document.getElementById('btn-enter-level2').addEventListener('click', startLevel2);
             document.getElementById('btn-enter-level3').addEventListener('click', () => {
@@ -1619,10 +1650,87 @@
 
         function beginMode(isFreePlay) {
             freePlayMode = isFreePlay;
+            onlineMode = false;
             document.getElementById('start-description').innerText = isFreePlay ?
-                'FREEPLAY: اجمع الحلقات وجرب الشخصيات والقدرات.' :
-                'PLAY GAME: اجمع 1000 حلقة ثم واجه إغمان وأعداء السماء.';
+                'FREEPLAY OFFLINE: العب ضد أعداء AI واجمع الحلقات.' :
+                'PLAY OFFLINE: اجمع 1000 حلقة ثم واجه إغمان وأعداء AI.';
             startGame();
+        }
+
+        function showOnlinePanel() {
+            document.getElementById('online-panel').classList.remove('hidden');
+            document.getElementById('start-description').innerText = 'ONLINE GAME: العب مع لاعب حقيقي عبر Room ID.';
+            document.getElementById('online-name').focus();
+        }
+
+        function connectOnlineGame() {
+            if (typeof Peer === 'undefined') {
+                document.getElementById('online-status').innerText = 'تعذر تحميل خدمة الاتصال. تحقق من الإنترنت.';
+                return;
+            }
+            const name = document.getElementById('online-name').value.trim() || 'Player';
+            const room = document.getElementById('online-room').value.trim();
+            onlineMode = true;
+            freePlayMode = true;
+            const status = document.getElementById('online-status');
+            status.innerText = room ? 'جاري الاتصال بالغرفة...' : 'جاري إنشاء غرفة...';
+            peer = room ? new Peer() : new Peer(`sonic-${Math.random().toString(36).slice(2, 9)}`);
+            peer.on('open', id => {
+                if (!room) {
+                    document.getElementById('online-room').value = id;
+                    status.innerText = `غرفتك جاهزة. شارك هذا الكود: ${id}`;
+                } else {
+                    peerConnection = peer.connect(room, { reliable: true, metadata: { name } });
+                    setupPeerConnection(peerConnection, name);
+                }
+                startGame();
+            });
+            peer.on('connection', connection => setupPeerConnection(connection, name));
+            peer.on('error', error => { status.innerText = `تعذر الاتصال: ${error.type}`; });
+        }
+
+        function setupPeerConnection(connection, name) {
+            peerConnection = connection;
+            connection.on('open', () => {
+                document.getElementById('online-status').innerText = 'متصل بلاعب حقيقي.';
+                document.getElementById('chat-panel').classList.remove('hidden');
+                connection.send({ type: 'hello', name });
+            });
+            connection.on('data', message => {
+                if (message.type === 'chat') addChatMessage(message.name, message.text);
+                if (message.type === 'hello') addChatMessage('SYSTEM', `${message.name} دخل الغرفة`);
+                if (message.type === 'state') updateRemotePlayer(message);
+            });
+            connection.on('close', () => addChatMessage('SYSTEM', 'غادر اللاعب الغرفة'));
+        }
+
+        function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const text = input.value.trim();
+            if (!text || !peerConnection?.open) return;
+            const name = document.getElementById('online-name').value.trim() || 'Player';
+            peerConnection.send({ type: 'chat', name, text });
+            addChatMessage(name, text);
+            input.value = '';
+        }
+
+        function addChatMessage(name, text) {
+            const log = document.getElementById('chat-log');
+            const line = document.createElement('div');
+            line.innerText = `${name}: ${text}`;
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function updateRemotePlayer(message) {
+            let remote = remotePlayers.get(message.peerId);
+            if (!remote) {
+                const material = new THREE.MeshStandardMaterial({ color: 0xf472b6, emissive: 0x4c0519 });
+                remote = { mesh: new THREE.Mesh(new THREE.SphereGeometry(0.75, 16, 12), material) };
+                scene.add(remote.mesh);
+                remotePlayers.set(message.peerId, remote);
+            }
+            remote.mesh.position.set(message.x, message.y + 0.8, message.z);
         }
 
         function redeemSecretCode() {
@@ -1702,6 +1810,19 @@
         }
 
         function renderLockerItems(category) {
+            const abilityDescriptions = {
+                ability_dash: 'اندفاع سريع إلى الأمام مع سرعة عالية.', ability_shield: 'درع يمتص ضربة واحدة.',
+                ability_magnet: 'يجذب الحلقات القريبة تلقائيًا.', ability_fire: 'انفجار ناري يهزم الأعداء القريبين.',
+                ability_freeze: 'يجمّد الأعداء لعدة ثوانٍ.', ability_boom: 'ضربة قوية تنظف المنطقة.',
+                ability_teleport: 'ينقلك فورًا إلى مكان قريب.', ability_super_jump: 'قفزة خارقة إلى ارتفاع كبير.',
+                ability_time: 'يبطّئ حركة الأعداء مؤقتًا.', ability_laser: 'هجوم ليزري قوي.',
+                ability_storm: 'عاصفة تضرب الأعداء حولك.', ability_heal: 'يعيد صحتك إلى 100%.',
+                ability_invisibility: 'يجعلك غير مرئي مؤقتًا.', ability_clone: 'ينشئ آثارًا وهمية.',
+                ability_blast: 'موجة انفجار واسعة.', ability_wind: 'يزيد سرعتك مؤقتًا.',
+                ability_ice_wall: 'درع جليدي يحميك من ضربة.', ability_meteor: 'نيزك يدمر الأعداء القريبين.',
+                ability_vortex: 'دوامة تضرب المنطقة كاملة.', ability_rainbow: 'طاقة ملونة تمنحك سرعة.',
+                ability_guardian: 'حماية مؤقتة من الأعداء.'
+            };
             const catalog = {
                 backpacks: [['backpack_basic', 'BLUE PACK', 100, '#2563eb'], ['backpack_fire', 'FIRE PACK', 250, '#f97316'], ['backpack_shadow', 'SHADOW PACK', 400, '#171717'], ['backpack_wings', 'WING PACK', 600, '#a855f7'], ['backpack_gold', 'GOLD PACK', 900, '#facc15']],
                 abilities: [
@@ -1715,7 +1836,8 @@
                 const isNone = id.startsWith('none_');
                 const owned = isNone || !!ownedLockerItems[id];
                 const equipped = equippedLockerItems[category] === id || (isNone && !equippedLockerItems[category]);
-                return `<div class="character-card locker-choice p-3 rounded-xl text-center font-black" data-locker-item="${id}"><div class="character-preview" style="--character-color:${color}"></div>${name}<br><span class="text-yellow-300 text-xs">${equipped ? 'EQUIPPED' : owned ? 'OWNED' : `${cost} RINGS`}</span><br><button data-item-id="${id}" data-item-cost="${cost}" class="locker-item-action bg-cyan-400 text-blue-950 px-3 py-1 rounded text-xs mt-2">${equipped ? 'EQUIPPED' : owned ? 'EQUIP' : 'BUY'}</button></div>`;
+                const description = category === 'abilities' ? `<span class="ability-description">${abilityDescriptions[id] || 'قدرة خاصة تساعدك في اللعب.'}</span>` : '';
+                return `<div class="character-card locker-choice p-3 rounded-xl text-center font-black" data-locker-item="${id}"><div class="character-preview" style="--character-color:${color}"></div>${name}${description}<br><span class="text-yellow-300 text-xs">${equipped ? 'EQUIPPED' : owned ? 'OWNED' : `${cost} RINGS`}</span><br><button data-item-id="${id}" data-item-cost="${cost}" class="locker-item-action bg-cyan-400 text-blue-950 px-3 py-1 rounded text-xs mt-2">${equipped ? 'EQUIPPED' : owned ? 'EQUIP' : 'BUY'}</button></div>`;
             }).join('');
             items.querySelectorAll('.locker-item-action').forEach(button => {
                 button.addEventListener('click', (event) => {
@@ -2350,6 +2472,10 @@
             if (currentLevel >= 3) updateFlyingEnemies();
             checkCollisions();
             updateProjectiles();
+
+            if (onlineMode && peerConnection?.open && ++networkTimer % 6 === 0) {
+                peerConnection.send({ type: 'state', peerId: peer.id, x: player.position.x, y: player.position.y, z: player.position.z });
+            }
 
             if (damageCooldown > 0) damageCooldown--;
             if (hitFlashTimer > 0) {
